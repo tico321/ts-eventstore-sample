@@ -3,14 +3,15 @@ import * as chai from 'chai';
 chai.should();
 
 import { TsEventStore } from 'ts-eventstore/TsEventStore';
-import { CommandStream } from 'ts-eventstore/messages/CommandStream';
-import { CommandMessage } from 'ts-eventstore/messages/CommandMessage';
-import { EventMessage } from 'ts-eventstore/messages/EventMessage';
-import { EventStream } from 'ts-eventstore/messages/EventStream';
-import { IDomainEvent } from 'ts-eventstore/data/IDomainEvent';
+import { CommandStream } from 'ts-eventstore/CommandStream';
+import { CommandMessage } from 'ts-eventstore/CommandMessage';
+import { EventMessage } from 'ts-eventstore/EventMessage';
+import { EventStream } from 'ts-eventstore/EventStream';
+import { IDomainEvent } from 'ts-eventstore/IDomainEvent';
 import * as http from 'http';
 import { MongoContext } from 'ts-eventstore-mongodb/MongoContext';
-import { SocketIOMessaging } from 'ts-eventstore-socketio/SocketIOMessaging';
+import { SocketIOServerProxyFactory } from 'ts-eventstore-socketio/SocketIOServerProxyFactory';
+import { SocketIOServerFactory } from 'ts-eventstore-socketio/SocketIOServerFactory';
 import 'rxjs/add/operator/bufferCount';
 import * as socketio from 'socket.io';
 import * as io from 'socket.io-client';
@@ -28,27 +29,27 @@ describe('Composition Root Integration', () => {
     reconnect: false
   };
 
-  describe('Command streams', () => {
-    it('bus creates the command streams in such a way that they receive updates when the ' +
+  describe.skip('Command streams', () => {
+    it('subscriber creates the command streams in such a way that they receive updates when the ' +
       'command handlers are invoked.', (done) => {
 
       const commandName = 'testCommand';
       const data = 'data';
       const message = new CommandMessage(commandName, data);
-      const eventStore = TsEventStore.bootstrap({
-        messaging: SocketIOMessaging(),
-        context: new MongoContext({connectionString: mongoUrl})
-      });
-      const bus = eventStore.bus;
-      const server = eventStore.server;
-      server.start(socketio(messageConfig.http));
-      httpServer.listen(messageConfig.port);
+      const context = new MongoContext({connectionString: mongoUrl});
       const socket = io.connect(
         `${messageConfig.address}:${messageConfig.port}`,
         {reconnection: messageConfig.reconnect || true});
-      bus.connect(socket);
+      const subscriber = TsEventStore.getSubscriber(new SocketIOServerProxyFactory(socket));
+      const publisher = TsEventStore.getPublisher(
+        context,
+        new SocketIOServerFactory(socketio(messageConfig.http)));
+      publisher.start();
+      httpServer.listen(messageConfig.port);
 
-      bus.getCommandStream(commandName)
+      subscriber.connect();
+
+      subscriber.getCommandStream(commandName)
         .subscribe(
           (stream : CommandStream) => {
             chai.assert.isNotNull(stream);
@@ -58,12 +59,12 @@ describe('Composition Root Integration', () => {
           },
           err => done(err));
 
-      bus.invokeHandlers(message);
+      subscriber.invokeHandlers(message);
     });
   });
 
-  describe('Event streams', () => {
-    it('bus creates the event streams in such a way that they receive updates when the ' +
+  describe.skip('Event streams', () => {
+    it('subscriber creates the event streams in such a way that they receive updates when the ' +
       'an event raiser raises an event plus they are stored in the db.', (done) => {
 
       const commandName = 'testCommand';
@@ -76,25 +77,24 @@ describe('Composition Root Integration', () => {
         'eventData',
         aggregateId,
         0);
-      const eventStore = TsEventStore.bootstrap({
-        context: new MongoContext({connectionString: mongoUrl}),
-        messaging: SocketIOMessaging(),
-      });
-      const bus = eventStore.bus;
-      const server = eventStore.server;
-      server.start(socketio(messageConfig.http));
-      httpServer.listen(messageConfig.port);
       const socket = io.connect(
         `${messageConfig.address}:${messageConfig.port}`,
         {reconnection: messageConfig.reconnect || true});
-      bus.connect(socket);
-      bus.getCommandStream(commandName)
+      const context = new MongoContext({connectionString: mongoUrl});
+      const subscriber = TsEventStore.getSubscriber(new SocketIOServerProxyFactory(socket));
+      const publisher = TsEventStore.getPublisher(
+        context,
+        new SocketIOServerFactory(socketio(messageConfig.http)));
+      publisher.start();
+      httpServer.listen(messageConfig.port);
+      subscriber.connect();
+      subscriber.getCommandStream(commandName)
         .subscribe(
           (stream : CommandStream) => {
-            stream.raiser.raiseEvent(eventMessage);
+            stream.eventRaiser.raiseEvent(eventMessage);
           },
           err => done(err));
-      bus.getEventStream(eventName)
+      subscriber.getEventStream(eventName)
         .subscribe(
           (stream : EventStream) => {
             chai.assert.equal(stream.event.data, 'eventData');
@@ -102,41 +102,42 @@ describe('Composition Root Integration', () => {
             done();
           },
           err => done(err));
-      bus.invokeHandlers(message);
+      subscriber.invokeHandlers(message);
     });
   });
 
   describe.skip('Query events', () => {
     it('Returns all the events for an aggregate root', (done) => {
+      const socket = io.connect(
+        `${messageConfig.address}:${messageConfig.port}`,
+        {reconnection: messageConfig.reconnect || true});
+      const context = new MongoContext({connectionString: mongoUrl});
+      const subscriber = TsEventStore.getSubscriber(new SocketIOServerProxyFactory(socket));
+      const publisher = TsEventStore.getPublisher(
+        context,
+        new SocketIOServerFactory(socketio(messageConfig.http)));
+      publisher.start();
+      httpServer.listen(messageConfig.port);
+      subscriber.connect();
+
       const commandName = 'testCommand';
-      const eventName = 'eventTest';
       const data = 'data';
       const message = new CommandMessage(commandName, data);
+      const eventName = 'eventTest';
       const aggregateId = +new Date();
       const eventMessage1 = new EventMessage(
         eventName, 'eventData1', aggregateId, 0);
       const eventMessage2 = new EventMessage(
         eventName, 'eventData2', aggregateId, 0);
-      const eventStore = TsEventStore.bootstrap({
-        context: new MongoContext({connectionString: mongoUrl}),
-        messaging: SocketIOMessaging(),
-      });
-      const bus = eventStore.bus;
-      const server = eventStore.server;
-      server.start(socketio(messageConfig.http));
-      httpServer.listen(messageConfig.port);
-      const socket = io.connect(
-        `${messageConfig.address}:${messageConfig.port}`,
-        {reconnection: messageConfig.reconnect || true});
-      bus.connect(socket);
-      bus.getCommandStream(commandName)
+
+      subscriber.getCommandStream(commandName)
         .subscribe(
           (stream : CommandStream) => {
-            stream.raiser.raiseEvent(eventMessage1);
-            stream.raiser.raiseEvent(eventMessage2);
+            stream.eventRaiser.raiseEvent(eventMessage1);
+            stream.eventRaiser.raiseEvent(eventMessage2);
           },
           err => done(err));
-      bus.getEventStream(eventName)
+      subscriber.getEventStream(eventName)
         .bufferCount(2)
         .subscribe(
           (streams : EventStream[]) => {
@@ -153,7 +154,8 @@ describe('Composition Root Integration', () => {
                 err => done(err));
           },
           err => done(err));
-      bus.invokeHandlers(message);
+
+      subscriber.invokeHandlers(message);
     });
   });
 
